@@ -57,6 +57,8 @@ def load_depth(depth_path, to_tensor=True):
     if depth_path.endswith('.png'):
         depth = np.asarray(imageio.imread(depth_path)).astype(np.float32)
         depth = depth / 1000.
+    elif depth_path.endswith('.npy'):
+        depth = np.load(depth_path)
     elif depth_path.endswith('.npz'):
         depth = np.load(depth_path)['depth']
     else:
