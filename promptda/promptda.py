@@ -44,6 +44,7 @@ class PromptDA(nn.Module):
         self.register_buffer('_std', torch.tensor(
             [0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
+        breakpoint()
         self.load_checkpoint(ckpt_path)
     
     @classmethod
