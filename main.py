@@ -1,34 +1,38 @@
-from promptda.promptda import PromptDA
-from promptda.utils.io_wrapper import load_image, load_depth, save_depth
+import requests
 import torch
+import numpy as np
+from PIL import Image
+from transformers import PromptDepthAnythingForDepthEstimation, PromptDepthAnythingImageProcessor
+from promptda.utils.io_wrapper import load_image, load_depth, save_depth
 
-DEVICE = 'cpu'
-image_path = "../../datasets/nyuv2/train/img/img_1.png"
-prompt_depth_path = "../../datasets/nyuv2/train/gt/gt_1.npy"
-mask_path = "../../datasets/nyuv2/mask/0.npy"
+#url = "https://github.com/DepthAnything/PromptDA/blob/main/assets/example_images/image.jpg?raw=true"
+#image = Image.open(requests.get(url, stream=True).raw)
+img_path = "../Realtime-Depth-Estimation-Nconv/tmp/color_rgb.png"
+image = Image.open(img_path)
 
-image = load_image(image_path)[:,:3,:,:].to(DEVICE)
-prompt_depth = load_depth(prompt_depth_path).to(DEVICE) # 192x256, ARKit LiDAR depth in meters
-mask = load_depth(mask_path).to(DEVICE)
-# invert mask
-mask = torch.logical_not(mask.bool())
+image_processor = PromptDepthAnythingImageProcessor.from_pretrained("depth-anything/prompt-depth-anything-vitl-hf")
+model = PromptDepthAnythingForDepthEstimation.from_pretrained("depth-anything/prompt-depth-anything-vitl-hf")
 
-image = image[:,:,2:,:]
-image = image[:,:,:-2,:]
-image = image[:,:,:,5:]
-image = image[:,:,:,:-5]
+#prompt_depth_url = "https://github.com/DepthAnything/PromptDA/blob/main/assets/example_images/arkit_depth.png?raw=true"
+#prompt_depth = Image.open(requests.get(prompt_depth_url, stream=True).raw)
+depth_path = "../Realtime-Depth-Estimation-Nconv/tmp/depth_output.npy"
+#prompt_depth = Image.open(depth_path)
+prompt_depth = np.load(depth_path)
+#prompt_depth = np.resize(prompt_depth, (image.width//2, image.height//2))
 
-prompt_depth = prompt_depth[:,:,2:,:]
-prompt_depth = prompt_depth[:,:,:-2,:]
-prompt_depth = prompt_depth[:,:,:,5:]
-prompt_depth = prompt_depth[:,:,:,:-5]
+inputs = image_processor(images=image, return_tensors="pt", prompt_depth=prompt_depth)
+with torch.no_grad():
+    outputs = model(**inputs)
+post_processed_output = image_processor.post_process_depth_estimation(
+    outputs,
+    target_sizes=[(image.height, image.width)],
+)
 
-padding = (22, 21, 52, 53)
-mask = torch.nn.functional.pad(mask, padding, 'constant', 0)
+predicted_depth = post_processed_output[0]["predicted_depth"]
 
-#prompt_depth[mask] = 0
 
-model = PromptDA.from_pretrained("depth-anything/prompt-depth-anything-vitl.ckpt").to(DEVICE).eval()
-depth = model.predict(image, prompt_depth) # HxW, depth in meters
+breakpoint()
+predicted_depth = predicted_depth.unsqueeze(0)
+predicted_depth = predicted_depth.unsqueeze(0)
+save_depth(predicted_depth)
 
-save_depth(depth, prompt_depth=prompt_depth, image=image)

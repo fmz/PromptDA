@@ -77,6 +77,7 @@ def save_depth(depth,
     '''
     Save depth to path
     '''
+    breakpoint()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     depth = to_numpy_func(depth)
     uint16_depth = (depth * 1000.).astype(np.uint16)

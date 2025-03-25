@@ -160,22 +160,20 @@ def main(args):
     """
     Break.start()
 
-    # 1) Parse args
-
-    # 2) Logging
+    # 1) Logging
     log_level = "INFO"
     logger = setup_logger(getattr(logging, log_level, logging.INFO))
 
     debug = args.debug
 
-    # 3) Device
+    # 2) Device
     device = torch_pick_device(args.device)
     logging.info(f"Using device: {device}")
     if device == torch.device("cuda"):
         torch.backends.cudnn.enabled   = True
         torch.backends.cudnn.benchmark = True
 
-    # 4) Dataset & Dataloader
+    # 3) Dataset & Dataloader
     dataset_path = args.data
     train_dataset = NYUDepthDataset(
         data_dir=dataset_path,

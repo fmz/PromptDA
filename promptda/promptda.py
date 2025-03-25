@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from promptda.model.dpt import DPTHead
 from promptda.model.config import model_configs
 from promptda.utils.logger import Log
@@ -44,9 +45,8 @@ class PromptDA(nn.Module):
         self.register_buffer('_std', torch.tensor(
             [0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
-        breakpoint()
         self.load_checkpoint(ckpt_path)
-    
+
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path = None, model_kwargs = None, **hf_kwargs):
         """
@@ -89,14 +89,38 @@ class PromptDA(nn.Module):
 
     def forward(self, x, prompt_depth=None):
         assert prompt_depth is not None, 'prompt_depth is required'
-        prompt_depth, min_val, max_val = self.normalize(prompt_depth)
+        
+        # Trim the input image from both ends to be divisible by the patch size
         h, w = x.shape[-2:]
+        repad = False
+        original_h, original_w = h, w
+        if h % self.patch_size != 0 or w % self.patch_size != 0:
+            trim_top_bottom = h % self.patch_size
+            trim_top = trim_top_bottom // 2
+            trim_bottom = trim_top_bottom - trim_top
+
+            trim_left_right = w % self.patch_size
+            trim_left = trim_left_right // 2
+            trim_right = trim_left_right - trim_left
+
+            x = x[..., trim_top:-trim_bottom, trim_left:-trim_right]
+            prompt_depth = prompt_depth[..., trim_top:-trim_bottom, trim_left:-trim_right]
+            
+            h, w = x.shape[-2:]
+            repad = True
+
+        prompt_depth, min_val, max_val = self.normalize(prompt_depth)
+
         features = self.pretrained.get_intermediate_layers(
             (x - self._mean) / self._std, self.model_config['layer_idxs'],
             return_class_token=True)
         patch_h, patch_w = h // self.patch_size, w // self.patch_size
         depth = self.depth_head(features, patch_h, patch_w, prompt_depth)
         depth = self.denormalize(depth, min_val, max_val)
+
+        if repad:
+            depth = F.interpolate(depth, (original_h, original_w), mode="bilinear", align_corners=True)
+
         return depth
 
     @torch.no_grad()
