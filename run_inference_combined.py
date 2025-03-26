@@ -49,40 +49,39 @@ from promptda.my_utils import save_rgb, save_depth
 #     cv2.imwrite(path + ".png", colored_depth)
 
 def load_depth_from_binary(file_path, width, height):
-    try:
-        with open(file_path, 'rb') as f:
-            # Read the first 4 bytes to get the data length (int32)
-            length_bytes = f.read(4)
-            if len(length_bytes) < 4:
-                raise ValueError(f'File {file_path} is too short to contain a valid header.')
+    with open(file_path, 'rb') as f:
+        # Read the first 4 bytes to get the data length (int32)
+        length_bytes = f.read(4)
+        if len(length_bytes) < 4:
+            raise ValueError(f'File {file_path} is too short to contain a valid header.')
 
-            data_length = np.frombuffer(length_bytes, dtype=np.int32)[0]
+        data_length = np.frombuffer(length_bytes, dtype=np.int32)[0]
 
-            # Expected data length
-            expected_size = width * height
+        # Expected data length
+        expected_size = 640*480 #width * height
 
-            if data_length != expected_size:
-                raise ValueError(
-                    f'File {file_path} has data length {data_length}, expected {expected_size}.'
-                )
+        if data_length != expected_size:
+            raise ValueError(
+                f'File {file_path} has data length {data_length}, expected {expected_size}.'
+            )
 
-            # Read the float32 depth data
-            float_data = np.fromfile(f, dtype=np.float32, count=data_length)
+        # Read the float32 depth data
+        float_data = np.fromfile(f, dtype=np.float32, count=data_length)
 
-            if len(float_data) != expected_size:
-                raise ValueError(
-                    f'File {file_path} contains {len(float_data)} float values, expected {expected_size}.'
-                )
+        if len(float_data) != expected_size:
+            raise ValueError(
+                f'File {file_path} contains {len(float_data)} float values, expected {expected_size}.'
+            )
 
-            # Reshape to 2D depth map
-            float_data = float_data.reshape((width, height))
-            float_data = np.rot90(float_data, 3).copy() # copy to get rid of strides
-            depth_map = float_data.reshape((1, 1, height, width))
-            
-            return depth_map
-    except Exception as e:
-        print(f"Error loading depth map: {e}")
-        return np.zeros((1,1,height, width), dtype='float32')
+        # Reshape to 2D depth map
+        float_data = float_data.reshape((480, 640))
+        float_data = float_data[44:-44, 24:-24]
+        #float_data = cv2.resize(float_data, dsize=(width, height), interpolation=cv2.INTER_CUBIC)
+        float_data = np.rot90(float_data, -1).copy() # copy to get rid of strides
+
+        depth_map  = float_data.reshape((1, 1, height, width))
+        
+        return depth_map
 
 def load_local_checkpoint(
         model: nn.Module,
@@ -104,7 +103,12 @@ def load_local_checkpoint(
         # assume it's a raw state_dict
         model_sd = ckpt
 
-    missing, unexpected = model.load_state_dict(model_sd, strict=strict)
+    # Remove the "module." prefix if it's present (module is for DataParallel)
+    new_state_dict = {}
+    for k, v in model_sd.items():
+        name = k[7:] if k.startswith("module.") else k
+        new_state_dict[name] = v
+    missing, unexpected = model.load_state_dict(new_state_dict, strict=strict)
     if missing:
         print(f"Missing keys in state_dict: {missing}")
     if unexpected:
@@ -155,10 +159,11 @@ def run_inference_on_images(
 
         # 2) Preprocess for Step2 (resize or other transform as needed):
         #    Example: simple cv2.resize
-        if (input_width > 0) and (input_height > 0):
-            rgb_resized = cv2.resize(rgb_image, (input_width, input_height), interpolation=cv2.INTER_AREA)
-        else:
-            rgb_resized = rgb_image
+        # if (input_width > 0) and (input_height > 0):
+        #     rgb_resized = cv2.resize(rgb_image, (input_width, input_height), interpolation=cv2.INTER_AREA)
+        # else:
+        rgb_resized = rgb_image[4:-4, ...]
+        rgb_resized = np.pad(rgb_resized, ((0,0),(1,1),(0,0)), mode='constant', constant_values=0)
 
         # Convert to tensor
         rgb_tensor   = torch.from_numpy(rgb_resized).float().permute(2, 0, 1).unsqueeze(0).to(device)
@@ -171,8 +176,8 @@ def run_inference_on_images(
 
         # 4) PromptDA inference
         #    If PromptDA also wants (rgb, depth), do:
-        promptda_pred = promptda_model(rgb_tensor, depth_sparse)
-        
+        #promptda_pred = promptda_model(rgb_tensor, refined_depth)
+        promptda_pred = refined_depth
         # shape: [1, 1, H, W], presumably
 
         print(f"Inference time: {(time.time() - t_start)*1000:4.4f}ms")
@@ -188,8 +193,8 @@ def run_inference_on_images(
         if save_numpy:
             np.save(save_path + "_raw_depth_meter.npy", pred_depth_np)
 
-        save_rgb(rgb_tensor[0].detach().cpu().numpy(), save_path + "_rgb.png")
-        save_depth(pred_depth_np, save_path + "_pred", save_npy=False)
+        #save_rgb(rgb_tensor[0].detach().cpu().numpy(), save_path + "_rgb.png")
+        save_depth(pred_depth_np, save_path , save_npy=False)
 
         # # Create a color or grayscale output
         # depth_vis = (pred_depth_np - pred_depth_np.min()) / (pred_depth_np.max() - pred_depth_np.min() + 1e-8)

@@ -94,20 +94,25 @@ class PromptDA(nn.Module):
         h, w = x.shape[-2:]
         repad = False
         original_h, original_w = h, w
-        if h % self.patch_size != 0 or w % self.patch_size != 0:
+        if h % self.patch_size != 0:
             trim_top_bottom = h % self.patch_size
             trim_top = trim_top_bottom // 2
             trim_bottom = trim_top_bottom - trim_top
 
+            x = x[..., trim_top:-trim_bottom, :]
+            prompt_depth = prompt_depth[..., trim_top:-trim_bottom, :]   
+            repad = True
+
+        if w % self.patch_size != 0:
             trim_left_right = w % self.patch_size
             trim_left = trim_left_right // 2
             trim_right = trim_left_right - trim_left
 
-            x = x[..., trim_top:-trim_bottom, trim_left:-trim_right]
-            prompt_depth = prompt_depth[..., trim_top:-trim_bottom, trim_left:-trim_right]
-            
-            h, w = x.shape[-2:]
+            x = x[..., :, trim_left:-trim_right]
+            prompt_depth = prompt_depth[..., :, trim_left:-trim_right]
             repad = True
+
+        h, w = x.shape[-2:]
 
         prompt_depth, min_val, max_val = self.normalize(prompt_depth)
 
