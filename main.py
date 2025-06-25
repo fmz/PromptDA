@@ -160,7 +160,8 @@ post_processed_output = image_processor.post_process_depth_estimation(
 
 predicted_depth = post_processed_output[0]["predicted_depth"]
 
-#breakpoint()
 predicted_depth = predicted_depth.unsqueeze(0)
 predicted_depth = predicted_depth.unsqueeze(0)
+
 save_depth(predicted_depth, prompt_depth=inputs['prompt_depth'], image=image, output_path="results/example_depth.png")
+

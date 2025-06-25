@@ -1,24 +1,24 @@
-name: mypda
+name: mypda2
 channels:
-  - pytorch
   - conda-forge
+  - nvidia
   - defaults
 dependencies:
+  - cuda-toolkit=12.8
   - ffmpeg
   - moviepy
   - numpy
   - opt-einsum
   - pillow
   - pip
-  - python=3.12
-  - pytorch
+  - python=3.13
+  - python_abi=3.13
   - pyyaml
   - scikit-image
+  - transformers
+  - safetensors
   - setuptools
   - timm
-  - torchaudio
-  - torchvision
-  - xformers
   - lightning
   - h5py
   - tyro
@@ -31,4 +31,9 @@ dependencies:
     - opencv_contrib_python==4.10.0.84
     - raft
     - wget
+  - pip:
+    - --index-url https://download.pytorch.org/whl/cu128
+    - torch
+    - torchaudio
+    - xformers
 

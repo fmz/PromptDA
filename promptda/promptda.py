@@ -94,6 +94,7 @@ class PromptDA(nn.Module):
         h, w = x.shape[-2:]
         repad = False
         original_h, original_w = h, w
+        trim_top, trim_bottom, trim_left, trim_right = 0, 0, 0, 0
         if h % self.patch_size != 0:
             trim_top_bottom = h % self.patch_size
             trim_top = trim_top_bottom // 2
@@ -123,8 +124,10 @@ class PromptDA(nn.Module):
         depth = self.depth_head(features, patch_h, patch_w, prompt_depth)
         depth = self.denormalize(depth, min_val, max_val)
 
-        if repad:
-            depth = F.interpolate(depth, (original_h, original_w), mode="bilinear", align_corners=True)
+        # if repad:
+        #     breakpoint()
+        #     #depth = F.interpolate(depth, (original_h, original_w), mode="bilinear", align_corners=True)
+        #     depth = F.pad(depth, (trim_left, trim_right, trim_top, trim_bottom), mode='constant')
 
         return depth
 

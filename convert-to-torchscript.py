@@ -79,8 +79,8 @@ class OptimizedTracingWrapper(nn.Module):
         try:
             for module in self.model.modules():
                 if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
-                    if hasattr(module, 'weight') and module.weight.dim() == 4:
-                        module.weight.data = module.weight.data.to(memory_format=torch.channels_last)
+                    # if hasattr(module, 'weight') and module.weight.dim() == 4:
+                    #     module.weight.data = module.weight.data.to(memory_format=torch.channels_last)
                     if hasattr(module, 'bias') and module.bias is not None:
                         module.bias.data = module.bias.data.contiguous()
         except Exception as e:
@@ -88,17 +88,18 @@ class OptimizedTracingWrapper(nn.Module):
 
     def forward(self, rgb: torch.Tensor, depth_prompt: torch.Tensor) -> torch.Tensor:
         """Forward pass with optimized memory format for PromptDA."""
-        # Convert to channels_last for better performance
-        if rgb.dim() == 4 and rgb.device.type == 'cuda':
-            rgb = rgb.to(memory_format=torch.channels_last)
+        # # Convert to channels_last for better performance
+        # if rgb.dim() == 4 and rgb.device.type == 'cuda':
+        #     rgb = rgb.to(memory_format=torch.channels_last)
 
-        # Ensure inputs are the expected size
+        # Ensure RGB input is the expected size
         if rgb.shape[-2:] != (self.fixed_height, self.fixed_width):
             rgb = torch.nn.functional.interpolate(
                 rgb, size=(self.fixed_height, self.fixed_width),
                 mode='bilinear', align_corners=False, antialias=True
             )
 
+        # Ensure depth input is the expected size
         if depth_prompt.shape[-2:] != (self.fixed_height, self.fixed_width):
             depth_prompt = torch.nn.functional.interpolate(
                 depth_prompt, size=(self.fixed_height, self.fixed_width),
@@ -108,28 +109,21 @@ class OptimizedTracingWrapper(nn.Module):
         return self.model(rgb, depth_prompt)
 
 
-class FP16ModelWrapper(nn.Module):
-    """Wrapper to handle FP32 inputs/outputs with FP16 model weights for PromptDA."""
+class MixedPrecisionWrapper(nn.Module):
+    """Wrapper to handle mixed precision inference using PyTorch AMP."""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, device_type: str = 'cuda'):
         super().__init__()
-        self.model = model.half()
+        self.model = model
+        self.device_type = device_type
+        self.use_amp = device_type == 'cuda' and torch.cuda.is_available()
 
     def forward(self, rgb: torch.Tensor, depth_prompt: torch.Tensor) -> torch.Tensor:
-        # Convert inputs to FP16 for computation
-        rgb_dtype = rgb.dtype
-        if rgb_dtype == torch.float32:
-            rgb = rgb.half()
-            depth_prompt = depth_prompt.half()
-
-        # Forward pass in FP16
-        output = self.model(rgb, depth_prompt)
-
-        # Convert output back to original dtype
-        if rgb_dtype == torch.float32:
-            output = output.float()
-
-        return output
+        if self.use_amp:
+            with torch.autocast(device_type=self.device_type, dtype=torch.float16):
+                return self.model(rgb, depth_prompt)
+        else:
+            return self.model(rgb, depth_prompt)
 
 
 class BenchmarkWrapper:
@@ -186,27 +180,28 @@ class AdvancedModelConverter:
         for param in model.parameters():
             param.requires_grad_(False)
 
-        if device.type == 'cuda':
-            try:
-                model = model.to(memory_format=torch.channels_last)
-                logger.info("Applied channels_last memory format")
-            except Exception as e:
-                logger.debug(f"Memory format optimization failed: {e}")
+        # if device.type == 'cuda':
+        #     try:
+        #         model = model.to(memory_format=torch.channels_last)
+        #         logger.info("Applied channels_last memory format")
+        #     except Exception as e:
+        #         logger.warning(f"Memory format optimization failed: {e}")
 
-        logger.info(f"PromptDA model loaded and optimized on {device}")
+        logger.info(f"PromptDA model loaded on {device}")
         return model
 
     def prepare_inputs(self, batch_size: int, height: int, width: int,
                       device: torch.device, use_fp16: bool = False) -> tuple:
         """Prepare example inputs for PromptDA."""
-        dtype = torch.float16 if use_fp16 else torch.float32
+        # Always use FP32 inputs for mixed precision - let AMP handle the conversion
+        dtype = torch.float32
 
         rgb_input = torch.randn(batch_size, 3, height, width, device=device, dtype=dtype)
         depth_input = torch.randn(batch_size, 1, height, width, device=device, dtype=dtype)
 
         # Optimize memory format for CUDA
-        if device.type == 'cuda':
-            rgb_input = rgb_input.to(memory_format=torch.channels_last)
+        # if device.type == 'cuda':
+        #     rgb_input = rgb_input.to(memory_format=torch.channels_last)
 
         logger.info(f"RGB input: {rgb_input.shape}, {rgb_input.dtype}, {rgb_input.device}")
         logger.info(f"Depth input: {depth_input.shape}, {depth_input.dtype}, {depth_input.device}")
@@ -234,15 +229,15 @@ class AdvancedModelConverter:
             except Exception as e:
                 logger.warning(f"INT8 quantization failed: {e}")
 
-        # Apply FP16 optimization
+        # Apply mixed precision optimization
         if use_fp16 and device.type == 'cuda':
             try:
-                model = FP16ModelWrapper(model)
+                model = MixedPrecisionWrapper(model, device.type)
                 torch.backends.cudnn.allow_tf32 = True
                 torch.backends.cuda.matmul.allow_tf32 = True
-                logger.info("✓ Applied FP16 optimization")
+                logger.info("✓ Applied mixed precision optimization with AMP")
             except Exception as e:
-                logger.warning(f"FP16 optimization failed: {e}")
+                logger.warning(f"Mixed precision optimization failed: {e}")
 
         # Apply torch.compile if not converting to TorchScript
         if not for_torchscript:
@@ -357,7 +352,7 @@ class AdvancedModelConverter:
 
     def benchmark_model(self, model, inputs: tuple, num_warmup: int = 20,
                        num_runs: int = 100) -> Dict[str, float]:
-        """Comprehensive benchmarking."""
+        """Comprehensive benchmarking with mixed precision support."""
         logger.info(f"Running benchmark ({num_warmup} warmup + {num_runs} runs)...")
 
         wrapper = BenchmarkWrapper(model)

@@ -17,6 +17,10 @@ from promptda.my_utils import save_rgb, save_depth
 # If you have a specialized "save_depth" in your code, import that instead:
 # from promptda.my_utils import save_depth
 
+from transformers import PromptDepthAnythingImageProcessor
+
+from scipy.ndimage import distance_transform_edt
+
 ###############################################################################
 #                           Utility Functions                                 #
 ###############################################################################
@@ -75,7 +79,7 @@ def load_depth_from_binary(file_path, width, height):
 
         # Reshape to 2D depth map
         float_data = float_data.reshape((480, 640))
-        float_data = float_data[44:-44, 24:-24]
+        #float_data = float_data[44:-44, 24:-24]
         #float_data = cv2.resize(float_data, dsize=(width, height), interpolation=cv2.INTER_CUBIC)
         float_data = np.rot90(float_data, -1).copy() # copy to get rid of strides
 
@@ -145,6 +149,10 @@ def run_inference_on_images(
     # Optional colormap for grayscale usage
     cmap = matplotlib.colormaps.get_cmap('Spectral')
 
+
+    image_processor = PromptDepthAnythingImageProcessor.from_pretrained("depth-anything/prompt-depth-anything-vitl-hf")
+
+
     for idx, (rgb_file, depth_file) in enumerate(files):
         print(f"[{idx+1}/{len(files)}] Processing: {rgb_file} // {depth_file}")
 
@@ -168,16 +176,33 @@ def run_inference_on_images(
         # Convert to tensor
         rgb_tensor   = torch.from_numpy(rgb_resized).float().permute(2, 0, 1).unsqueeze(0).to(device)
         depth_sparse = torch.from_numpy(load_depth_from_binary(depth_file, input_width, input_height)).to(device)
+
+        inputs = image_processor(images=rgb_image, return_tensors="pt", prompt_depth=depth_sparse.squeeze())
+        rgb_tensor = inputs['pixel_values'].to(device)
+        depth_np = depth_sparse.detach().cpu().squeeze().numpy()
+        valid_mask = (depth_np > 0) & (depth_np < 1000)  # Assuming valid depth is in range [0, 1000]
+
+        # if np.any(~valid_mask):
+        #     _, nearest_indices = distance_transform_edt(
+        #         ~valid_mask, return_indices=True
+        #     )
+
+        #     depth_np[~valid_mask] = depth_np[nearest_indices[0][~valid_mask], nearest_indices[1][~valid_mask]]
+
+        #     depth_sparse = torch.from_numpy(depth_np).unsqueeze(0).unsqueeze(0).to(device)
+
         # 3) Step2 inference
         t_start = time.time()
-        step2_outputs = step2_model(rgb_tensor, depth_sparse)
-        refined_depth = step2_outputs[-1]  # Typically the final scale
+        #step2_outputs = step2_model(rgb_tensor, depth_sparse)
+        step2_outputs = step2_model.step1(depth_sparse)
+        refined_depth = step2_outputs #[-1]  # Typically the final scale
+
+        #refined_depth = depth_sparse #HACK
         # shape: [1, 1, H, W]
 
         # 4) PromptDA inference
-        #    If PromptDA also wants (rgb, depth), do:
-        #promptda_pred = promptda_model(rgb_tensor, refined_depth)
-        promptda_pred = refined_depth
+        promptda_pred = promptda_model(rgb_tensor, refined_depth)
+        #promptda_pred = refined_depth
         # shape: [1, 1, H, W], presumably
 
         print(f"Inference time: {(time.time() - t_start)*1000:4.4f}ms")
@@ -193,8 +218,9 @@ def run_inference_on_images(
         if save_numpy:
             np.save(save_path + "_raw_depth_meter.npy", pred_depth_np)
 
-        #save_rgb(rgb_tensor[0].detach().cpu().numpy(), save_path + "_rgb.png")
-        save_depth(pred_depth_np, save_path , save_npy=False)
+        save_rgb(rgb_tensor[0].detach().cpu().numpy(), save_path + "_rgb.png")
+        save_depth(refined_depth[0,0].detach().cpu().numpy(), save_path , save_npy=False)
+        save_depth(pred_depth_np, save_path + "_final", save_npy=save_numpy)
 
         # # Create a color or grayscale output
         # depth_vis = (pred_depth_np - pred_depth_np.min()) / (pred_depth_np.max() - pred_depth_np.min() + 1e-8)

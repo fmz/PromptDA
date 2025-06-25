@@ -10,10 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.profiler import profile, record_function, ProfilerActivity
+from safetensors.torch import load_file
 
 # Local project imports
 from promptda.promptda import PromptDA
 from promptda.nyuloader_v2 import NYUDepthDataset
+
+import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 from promptda.debug import Break
 from promptda.my_utils import (
@@ -83,13 +87,30 @@ def run_inference(
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             rgb = batch['rgb'].to(device)
-            depth = batch['gt'].to(device)
+            depth = batch['depth'].to(device)
             # mask = batch.get('mask', None)
             # if mask is not None:
             #     mask = torch.logical_not(mask.bool().to(device))
             #     depth[mask] = 0
 
+
             depth = depth.unsqueeze(1)
+            
+            depth_np_all = batch['depth'].detach().cpu().numpy()
+            for i in range(depth.shape[0]):
+                depth_np = depth_np_all[i]
+                depth_np = depth_np.squeeze()
+                valid_mask = (depth_np > 0) & (depth_np < 1000)  # Assuming valid depth is in range [0, 1000]
+
+                if np.any(~valid_mask):
+                    _, nearest_indices = distance_transform_edt(
+                        ~valid_mask, return_indices=True
+                    )
+
+                    depth_np[~valid_mask] = depth_np[nearest_indices[0][~valid_mask], nearest_indices[1][~valid_mask]]
+
+                    depth[i] = torch.from_numpy(depth_np).unsqueeze(0).to(device)
+
 
             if profiler:
                 # FIXME
@@ -128,6 +149,7 @@ def load_local_checkpoint(
         strict=False) -> None:
     """
     Loads a local checkpoint into the model's state_dict.
+    Supports both .safetensors and regular PyTorch checkpoint files.
 
     Args:
         model (nn.Module): The model to load weights into.
@@ -136,13 +158,20 @@ def load_local_checkpoint(
         strict (bool): Whether to enforce that all keys match exactly.
     """
     logging.info(f"Attempting to load checkpoint from {checkpoint_path} with strict={strict}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
-
-    # If the checkpoint was saved with a dictionary containing "model_state" or similar
-    if "model_state" in ckpt:
-        model_sd = ckpt["model_state"]
+    
+    # Check if it's a safetensors file
+    if checkpoint_path.endswith('.safetensors'):
+        logging.info("Loading safetensors checkpoint...")
+        model_sd = load_file(checkpoint_path, device=str(device))
     else:
-        model_sd = ckpt  # assume it's a direct state_dict
+        logging.info("Loading PyTorch checkpoint...")
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        
+        # If the checkpoint was saved with a dictionary containing "model_state" or similar
+        if "model_state" in ckpt:
+            model_sd = ckpt["model_state"]
+        else:
+            model_sd = ckpt  # assume it's a direct state_dict
 
     missing, unexpected = model.load_state_dict(model_sd, strict=strict)
     if missing:
@@ -153,10 +182,11 @@ def load_local_checkpoint(
 
 def main(args):
     """
-    Main function for training/fine-tuning a DPT model with a YAML config.
+    Main function for running inference with a PromptDA model.
+    Supports loading both .safetensors and PyTorch checkpoint files.
 
     Args:
-        config_path (str): Path to the YAML config file.
+        args: Command line arguments containing data path, optional model path, etc.
     """
     Break.start()
 
@@ -193,6 +223,10 @@ def main(args):
 
     model = PromptDA.from_pretrained("depth-anything/prompt-depth-anything-vitl.ckpt")
     model.to(device)
+    
+    # Load local checkpoint if provided
+    if args.model:
+        load_local_checkpoint(model, args.model, device, strict=False)
 
     # 6) Profiling
     enable_profiling = False
@@ -246,7 +280,7 @@ def read_cmd_line_args():
     parser.add_argument(
         '-m', '--model',
         type=str,
-        help='The path to the model file'
+        help='Path to the model checkpoint file (.safetensors or .ckpt/.pth)'
     )
 
     parser.add_argument(
@@ -273,7 +307,8 @@ def read_cmd_line_args():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} /path/to/train_config.yaml")
+        print(f"Usage: python {sys.argv[0]} --data /path/to/nyu/data [--model /path/to/checkpoint.safetensors] [--debug] [--device cuda]")
+        print(f"Example: python {sys.argv[0]} --data ./nyu_data --model ./checkpoints/model.safetensors --debug")
         sys.exit(1)
 
     args = read_cmd_line_args()

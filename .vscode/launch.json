@@ -20,7 +20,17 @@
             "program": "run_inference.py",
             "console": "integratedTerminal",
             "args": [
-                "--debug", "--data", "../datasets/nyuv2", "--device", "mps"
+                "--debug", "--data", "../datasets/nyuv2", "--device", "cuda"
+            ]
+        },
+                {
+            "name": "Python Debugger: Run Inference combined",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "run_inference_combined.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--debug", "--data", "../datasets/nyuv2", "--device", "cuda"
             ]
         }
     ]

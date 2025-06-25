@@ -12,6 +12,7 @@ imageio-ffmpeg
 einops
 tqdm
 ipdb
+safetensors
 # Diffusion
 transformers
 # ray
