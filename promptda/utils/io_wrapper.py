@@ -77,7 +77,6 @@ def save_depth(depth,
     '''
     Save depth to path
     '''
-    breakpoint()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     depth = to_numpy_func(depth)
     uint16_depth = (depth * 1000.).astype(np.uint16)
@@ -99,8 +98,8 @@ def save_depth(depth,
                                            depth_min=depth_min,
                                            depth_max=depth_max)
         imageio.imwrite(output_path, prompt_depth_vis)
-
-    if image is not None:
-        output_path = output_path_.replace('.png', '_image.jpg')
-        image = to_numpy_func(image)
-        imageio.imwrite(output_path, (image * 255).astype(np.uint8))
+    # FIXME
+    # if image is not None:
+        # output_path = output_path_.replace('.png', '_image.jpg')
+        # image = to_numpy_func(image)
+        # imageio.imwrite(output_path, (image * 255).astype(np.uint8))
