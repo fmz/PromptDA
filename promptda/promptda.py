@@ -124,10 +124,10 @@ class PromptDA(nn.Module):
         depth = self.depth_head(features, patch_h, patch_w, prompt_depth)
         depth = self.denormalize(depth, min_val, max_val)
 
-        # if repad:
-        #     breakpoint()
-        #     #depth = F.interpolate(depth, (original_h, original_w), mode="bilinear", align_corners=True)
-        #     depth = F.pad(depth, (trim_left, trim_right, trim_top, trim_bottom), mode='constant')
+        out_h, out_w = depth.shape[-2:]
+        if out_h != original_h or out_w != original_w:
+            # If we didn't trim the input image, we can just resize the output depth
+            depth = F.interpolate(depth, (original_h, original_w), mode="bilinear", align_corners=True)
 
         return depth
 
