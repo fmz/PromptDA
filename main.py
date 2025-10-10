@@ -1,6 +1,7 @@
 import requests
 import torch
 import numpy as np
+import cv2
 from PIL import Image
 from transformers import PromptDepthAnythingForDepthEstimation, PromptDepthAnythingImageProcessor
 from promptda.utils.io_wrapper import load_image, load_depth, save_depth
@@ -47,15 +48,17 @@ def load_depth_from_binary(file_path, width, height):
 
 #url = "https://github.com/DepthAnything/PromptDA/blob/main/assets/example_images/image.jpg?raw=true"
 #image = Image.open(requests.get(url, stream=True).raw)
-img_path = "../datasets/new_spot_data/1/color/0.png"
+img_path = "test-data/0.png"
 image = Image.open(img_path)
+image = image.rotate(-90, expand=True)
+image.save("results/example_image.png")
 
 image_processor = PromptDepthAnythingImageProcessor.from_pretrained("depth-anything/prompt-depth-anything-vitl-hf")
 model = PromptDepthAnythingForDepthEstimation.from_pretrained("depth-anything/prompt-depth-anything-vitl-hf")
 
 #prompt_depth_url = "https://github.com/DepthAnything/PromptDA/blob/main/assets/example_images/arkit_depth.png?raw=true"
 #prompt_depth = Image.open(requests.get(prompt_depth_url, stream=True).raw)
-depth_path = "../datasets/new_spot_data/1/depth/0"
+depth_path = "test-data/0"
 prompt_depth = load_depth_from_binary(depth_path, image.width, image.height)
 
 # depth_path = "results/arkit_depth.png"
@@ -78,6 +81,7 @@ processed_depth = inputs['prompt_depth']
 minval = processed_depth.mean()
 maxval = processed_depth.max()
 meanval = processed_depth.mean()
+
 # Strategy 1: Fill masked pixels with a random value bounded by the min and the max of the prompt depth
 #processed_depth[mask==0] = 0 #torch.from_numpy(np.random.uniform(minval, maxval, size=processed_depth[mask==0].shape)).float()
 # Interpolate the prompt depth where each masked pixel takes the value of the nearest non-masked pixel
@@ -118,6 +122,7 @@ if np.any(~valid_mask):  # If there are masked pixels to interpolate
     processed_depth = torch.from_numpy(depth_np).unsqueeze(0).unsqueeze(0)
 
 
+
 # from scipy.spatial.distance import cdist
 
 # if np.any(~valid_mask):  # If there are masked pixels to interpolate
@@ -144,12 +149,19 @@ if np.any(~valid_mask):  # If there are masked pixels to interpolate
 
 #     # Convert back to tensor
 #     processed_depth = torch.from_numpy(depth_np).unsqueeze(0).unsqueeze(0)
+    
+    
+# downscale depth by 16x
+processed_depth = torch.nn.functional.interpolate(
+    processed_depth,
+    scale_factor=0.0625,
+    mode='bilinear',
+    align_corners=True
+)
 
-
+breakpoint()
 # Update inputs with interpolated depth
 inputs['prompt_depth'] = processed_depth
-
-
 
 with torch.no_grad():
     outputs = model(**inputs)

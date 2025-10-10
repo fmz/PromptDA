@@ -87,7 +87,7 @@ class PromptDA(nn.Module):
         else:
             Log.warn(f'Checkpoint {ckpt_path} not found')
 
-    def forward(self, x, prompt_depth=None):
+    def forward(self, x, prompt_depth=None, rotate=False):
         assert prompt_depth is not None, 'prompt_depth is required'
         
         # Trim the input image from both ends to be divisible by the patch size
@@ -115,6 +115,13 @@ class PromptDA(nn.Module):
 
         h, w = x.shape[-2:]
 
+        if rotate:
+            # Rotate the input image and prompt depth by 90 degrees clockwise
+            x = torch.rot90(x, k=-1, dims=(-2, -1))
+            prompt_depth = torch.rot90(prompt_depth, k=-1, dims=(-2, -1))
+            # Adjust the dimensions after rotation
+            h, w = w, h
+
         prompt_depth, min_val, max_val = self.normalize(prompt_depth)
 
         features = self.pretrained.get_intermediate_layers(
@@ -123,6 +130,10 @@ class PromptDA(nn.Module):
         patch_h, patch_w = h // self.patch_size, w // self.patch_size
         depth = self.depth_head(features, patch_h, patch_w, prompt_depth)
         depth = self.denormalize(depth, min_val, max_val)
+
+        if rotate:
+            # Rotate the output depth back to the original orientation
+            depth = torch.rot90(depth, k=1, dims=(-2, -1))
 
         out_h, out_w = depth.shape[-2:]
         if out_h != original_h or out_w != original_w:
@@ -140,12 +151,15 @@ class PromptDA(nn.Module):
     def normalize(self,
                   prompt_depth: torch.Tensor):
         B, C, H, W = prompt_depth.shape
-        min_val = torch.quantile(
-            prompt_depth.reshape(B, -1), 0., dim=1, keepdim=True)[:, :, None, None]
-        max_val = torch.quantile(
-            prompt_depth.reshape(B, -1), 1., dim=1, keepdim=True)[:, :, None, None]
-        prompt_depth = (prompt_depth - min_val) / (max_val - min_val)
-        return prompt_depth, min_val, max_val
+        orig_dtype = prompt_depth.dtype
+        # Ensure quantile runs on float32 for numerical stability and op support
+        pd32 = prompt_depth.reshape(B, -1).float()
+        min_val = torch.quantile(pd32, 0.0, dim=1, keepdim=True)[:, :, None, None]
+        max_val = torch.quantile(pd32, 1.0, dim=1, keepdim=True)[:, :, None, None]
+        # Normalize in float32 then cast back to original dtype for downstream ops
+        prompt_depth_norm32 = (prompt_depth.float() - min_val) / (max_val - min_val)
+        prompt_depth_out = prompt_depth_norm32.to(orig_dtype)
+        return prompt_depth_out, min_val, max_val
 
     def denormalize(self,
                     depth: torch.Tensor,

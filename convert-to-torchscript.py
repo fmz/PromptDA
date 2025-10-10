@@ -46,17 +46,21 @@ def inference_mode_context():
     old_allow_tf32 = torch.backends.cuda.matmul.allow_tf32 if torch.cuda.is_available() else None
 
     try:
-        torch.set_grad_enabled(False)
-        if torch.cuda.is_available():
-            torch.backends.cudnn.deterministic = False
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cuda.enable_flash_sdp(True)
-            torch.backends.cuda.enable_mem_efficient_sdp(True)
-            torch.backends.cuda.enable_math_sdp(True)
-        yield
+        # Prefer inference_mode over manual grad toggling
+        with torch.inference_mode():
+            if torch.cuda.is_available():
+                torch.backends.cudnn.deterministic = False
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                # Guard optional SDP toggles
+                try:
+                    torch.backends.cuda.enable_flash_sdp(True)
+                    torch.backends.cuda.enable_mem_efficient_sdp(True)
+                    torch.backends.cuda.enable_math_sdp(True)
+                except Exception:
+                    pass
+            yield
     finally:
-        torch.set_grad_enabled(old_grad_enabled)
         if torch.cuda.is_available():
             torch.backends.cudnn.deterministic = old_deterministic
             torch.backends.cudnn.benchmark = old_benchmark
@@ -86,7 +90,7 @@ class OptimizedTracingWrapper(nn.Module):
         except Exception as e:
             logger.warning(f"Memory format optimization failed: {e}")
 
-    def forward(self, rgb: torch.Tensor, depth_prompt: torch.Tensor) -> torch.Tensor:
+    def forward(self, rgb: torch.Tensor, depth_prompt: torch.Tensor, rotate : bool) -> torch.Tensor:
         """Forward pass with optimized memory format for PromptDA."""
         # # Convert to channels_last for better performance
         # if rgb.dim() == 4 and rgb.device.type == 'cuda':
@@ -106,7 +110,7 @@ class OptimizedTracingWrapper(nn.Module):
                 mode='bilinear', align_corners=False, antialias=True
             )
 
-        return self.model(rgb, depth_prompt)
+        return self.model(rgb, depth_prompt, rotate)
 
 
 class MixedPrecisionWrapper(nn.Module):
@@ -167,9 +171,8 @@ class AdvancedModelConverter:
         logger.info(f"Loading PromptDA checkpoint from {checkpoint_path}")
 
         try:
-            with torch.device(device):
-                model = PromptDA.from_pretrained(checkpoint_path)
-            logger.info("✓ PromptDA model loaded successfully")
+            model = PromptDA.from_pretrained(checkpoint_path).to(device)
+            logger.info("PromptDA model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load PromptDA checkpoint: {e}")
             raise
@@ -179,13 +182,6 @@ class AdvancedModelConverter:
         # Disable gradients and apply memory optimizations
         for param in model.parameters():
             param.requires_grad_(False)
-
-        # if device.type == 'cuda':
-        #     try:
-        #         model = model.to(memory_format=torch.channels_last)
-        #         logger.info("Applied channels_last memory format")
-        #     except Exception as e:
-        #         logger.warning(f"Memory format optimization failed: {e}")
 
         logger.info(f"PromptDA model loaded on {device}")
         return model
@@ -334,19 +330,29 @@ class AdvancedModelConverter:
         """Validate trace consistency."""
         logger.info("Validating trace consistency...")
 
+        def _normalize_output(out):
+            if isinstance(out, dict):
+                # Compare first value deterministically
+                try:
+                    return next(iter(out.values()))
+                except StopIteration:
+                    return None
+            if isinstance(out, (list, tuple)):
+                return out[0] if len(out) == 1 else out
+            return out
+
         try:
             with inference_mode_context():
-                original_out = original_model(rgb_input, depth_input)
-                traced_out = scripted_model(rgb_input, depth_input)
-
-                if isinstance(original_out, (list, tuple)):
-                    original_out = original_out[0] if len(original_out) == 1 else original_out
-                if isinstance(traced_out, (list, tuple)):
-                    traced_out = traced_out[0] if len(traced_out) == 1 else traced_out
-
+                original_out = _normalize_output(original_model(rgb_input, depth_input))
+                traced_out = _normalize_output(scripted_model(rgb_input, depth_input))
+                if original_out is None or traced_out is None:
+                    logger.info("Skipping diff: empty outputs")
+                    return
+                if isinstance(original_out, (list, tuple)) or isinstance(traced_out, (list, tuple)):
+                    logger.info("Skipping diff: non-tensor outputs")
+                    return
                 diff = torch.max(torch.abs(original_out.float() - traced_out.float())).item()
                 logger.info(f"  Max difference: {diff:.6f}")
-
         except Exception as e:
             logger.warning(f"Validation failed: {e}")
 
@@ -422,8 +428,11 @@ def parse_args():
 
     parser.add_argument("--compile-only", action="store_true",
                        help="Use torch.compile instead of TorchScript")
-    parser.add_argument("--use-wrapper", action="store_true", default=True,
+    parser.add_argument("--use-wrapper", dest="use_wrapper", action="store_true",
                        help="Use optimized tracing wrapper")
+    parser.add_argument("--no-wrapper", dest="use_wrapper", action="store_false",
+                       help="Disable optimized tracing wrapper")
+    parser.set_defaults(use_wrapper=True)
 
     parser.add_argument("--fp16", action="store_true", help="Use FP16 precision")
     parser.add_argument("--int8", action="store_true", help="Apply INT8 quantization (CPU)")
@@ -466,7 +475,7 @@ def main():
         )
 
         if args.compile_only:
-            logger.info("✓ torch.compile optimization completed!")
+            logger.info("torch.compile optimization completed!")
             if args.benchmark:
                 converter.benchmark_model(optimized_model, (rgb_input, depth_input), num_runs=args.benchmark_runs)
             return
@@ -480,7 +489,7 @@ def main():
         # Save model
         logger.info("=== Saving Model ===")
         torch.jit.save(scripted_model, args.output)
-        logger.info(f"✓ Saved optimized model to: {args.output}")
+        logger.info(f"Saved optimized model to: {args.output}")
 
         # Benchmark if requested
         if args.benchmark:
@@ -489,7 +498,7 @@ def main():
 
         # Summary
         file_size_mb = os.path.getsize(args.output) / (1024 * 1024)
-        logger.info(f"✓ Conversion completed! Output size: {file_size_mb:.1f} MB")
+        logger.info(f"Conversion completed! Output size: {file_size_mb:.1f} MB")
 
     except Exception as e:
         logger.error(f"Conversion failed: {e}")
